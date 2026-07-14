@@ -1,0 +1,26 @@
+# Credenciais: nunca enviar ao GitHub
+serviceAccountKey.json
+*.service-account.json
+.env
+
+# Dados e arquivos de notas
+links_notas.txt
+*.csv
+debug_fila_notas/
+debug_notas/
+*.html
+
+# Projeto do site não pertence a este repositório
+public/
+app.js
+style.css
+firebase-config.js
+firebase-app.js
+firebase.json
+.firebaserc
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

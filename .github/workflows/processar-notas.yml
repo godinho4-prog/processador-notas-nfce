@@ -1,0 +1,62 @@
+name: Processar notas NFC-e
+run-name: Processar fila NFC-e
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: processar-notas-nfce
+  cancel-in-progress: false
+
+jobs:
+  processar-fila:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Baixar o processador
+        uses: actions/checkout@v4
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements-verificacao.txt
+            requirements-notas.txt
+
+      - name: Instalar verificador da fila
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-verificacao.txt
+
+      - name: Verificar se há notas para processar
+        id: fila
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: python verificar_fila_notas.py
+
+      - name: Informar fila vazia
+        if: steps.fila.outputs.tem_notas != 'true'
+        run: echo "Nenhuma nota aguardando. O navegador não será instalado."
+
+      - name: Instalar dependências do processador
+        if: steps.fila.outputs.tem_notas == 'true'
+        run: pip install -r requirements-notas.txt
+
+      - name: Instalar Chromium e dependências do sistema
+        if: steps.fila.outputs.tem_notas == 'true'
+        run: python -m playwright install --with-deps chromium
+
+      - name: Processar notas
+        if: steps.fila.outputs.tem_notas == 'true'
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          MODO_HEADLESS: "1"
+          SALVAR_DEBUG: "0"
+          PYTHONUNBUFFERED: "1"
+        run: python processar_fila_notas.py
