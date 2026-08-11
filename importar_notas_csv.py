@@ -257,9 +257,9 @@ def processar_texto_da_nota(texto, link_original):
     mercado = extrair_nome_mercado(linhas)
     cnpj = extrair_primeiro_cnpj(linhas)
 
-    chave = extrair_chave_de_acesso(texto)
+    chave = extrair_chave_do_qrcode(link_original)
     if not chave:
-        chave = extrair_chave_do_qrcode(link_original)
+        chave = extrair_chave_de_acesso(texto)
 
     data_emissao = extrair_data_emissao(texto)
     numero, serie = extrair_numero_serie(texto)

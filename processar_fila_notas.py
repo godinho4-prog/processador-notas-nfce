@@ -3,8 +3,14 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 import re
+import shutil
+import socket
+import subprocess
 import sys
+import tempfile
+import time
 import unicodedata
+import urllib.request
 
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -440,18 +446,130 @@ def marcar_erro(referencia, erro):
     })
 
 
-def criar_contexto(navegador):
-    return navegador.new_context(
-        locale="pt-BR",
-        timezone_id="America/Sao_Paulo",
-        viewport={"width": 412, "height": 915},
-        is_mobile=True,
-        has_touch=True,
-        user_agent=(
-            "Mozilla/5.0 (Linux; Android 16; SM-S926B) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/126.0.0.0 Mobile Safari/537.36"
-        ),
+def encontrar_edge():
+    candidatos = []
+
+    if os.name == "nt":
+        for variavel in ("ProgramFiles(x86)", "ProgramFiles"):
+            base = os.environ.get(variavel)
+
+            if base:
+                candidatos.append(
+                    Path(base)
+                    / "Microsoft"
+                    / "Edge"
+                    / "Application"
+                    / "msedge.exe"
+                )
+    else:
+        for nome in (
+            "microsoft-edge",
+            "microsoft-edge-stable",
+        ):
+            caminho = shutil.which(nome)
+
+            if caminho:
+                candidatos.append(Path(caminho))
+
+    for caminho in candidatos:
+        if caminho.exists():
+            return caminho
+
+    raise FileNotFoundError(
+        "Não foi possível localizar o Microsoft Edge."
+    )
+
+
+def escolher_porta_livre():
+    with socket.socket(
+        socket.AF_INET,
+        socket.SOCK_STREAM,
+    ) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def encerrar_edge_externo(processo, pasta_perfil):
+    if processo is not None and processo.poll() is None:
+        processo.terminate()
+
+        try:
+            processo.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            processo.kill()
+            processo.wait(timeout=5)
+
+    if pasta_perfil is not None:
+        shutil.rmtree(
+            pasta_perfil,
+            ignore_errors=True,
+        )
+
+
+def iniciar_edge_externo(modo_headless):
+    edge = encontrar_edge()
+    porta = escolher_porta_livre()
+
+    pasta_perfil = Path(
+        tempfile.mkdtemp(prefix="edge_nfce_")
+    )
+
+    argumentos = [
+        str(edge),
+        f"--remote-debugging-port={porta}",
+        "--remote-debugging-address=127.0.0.1",
+        f"--user-data-dir={pasta_perfil}",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+
+    if modo_headless:
+        argumentos.append("--headless=new")
+
+    argumentos.append("about:blank")
+
+    processo = subprocess.Popen(
+        argumentos,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    endereco_cdp = f"http://127.0.0.1:{porta}"
+
+    for _ in range(40):
+        if processo.poll() is not None:
+            shutil.rmtree(
+                pasta_perfil,
+                ignore_errors=True,
+            )
+
+            raise RuntimeError(
+                "O Microsoft Edge foi iniciado, "
+                "mas encerrou inesperadamente."
+            )
+
+        try:
+            with urllib.request.urlopen(
+                f"{endereco_cdp}/json/version",
+                timeout=1,
+            ):
+                return (
+                    processo,
+                    pasta_perfil,
+                    endereco_cdp,
+                )
+
+        except Exception:
+            time.sleep(0.5)
+
+    encerrar_edge_externo(
+        processo,
+        pasta_perfil,
+    )
+
+    raise RuntimeError(
+        "O Microsoft Edge abriu, mas a conexão "
+        "de depuração não ficou disponível."
     )
 
 
@@ -495,12 +613,31 @@ def main():
     )
 
     with sync_playwright() as p:
-        navegador = p.chromium.launch(
-            headless=modo_headless,
-            slow_mo=0 if modo_headless else 200,
+        processo_edge, pasta_perfil_edge, endereco_cdp = (
+            iniciar_edge_externo(modo_headless)
         )
 
-        contexto = criar_contexto(navegador)
+        print(
+            "Edge externo iniciado. "
+            "Conectando o Playwright..."
+        )
+
+        navegador = p.chromium.connect_over_cdp(
+            endereco_cdp
+        )
+
+        if not navegador.contexts:
+            encerrar_edge_externo(
+                processo_edge,
+                pasta_perfil_edge,
+            )
+
+            raise RuntimeError(
+                "O Playwright conectou ao Edge, "
+                "mas não encontrou um contexto de navegação."
+            )
+
+        contexto = navegador.contexts[0]
 
         for numero, documento in enumerate(solicitacoes, start=1):
             referencia = documento.reference
@@ -569,8 +706,8 @@ def main():
                     link,
                 )
 
-                validar_nota(nota, chave)
                 salvar_debug(chave, texto, html)
+                validar_nota(nota, chave)
 
                 dados_nota = salvar_nota_capturada(
                     db,
@@ -604,8 +741,13 @@ def main():
             finally:
                 pagina.close()
 
-        contexto.close()
-        navegador.close()
+        try:
+            navegador.close()
+        finally:
+            encerrar_edge_externo(
+                processo_edge,
+                pasta_perfil_edge,
+            )
 
     print()
     print("=" * 70)
