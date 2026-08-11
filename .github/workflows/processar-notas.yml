@@ -48,9 +48,11 @@ jobs:
         if: steps.fila.outputs.tem_notas == 'true'
         run: pip install -r requirements-notas.txt
 
-      - name: Instalar Chromium e dependências do sistema
+      - name: Conferir Microsoft Edge
         if: steps.fila.outputs.tem_notas == 'true'
-        run: python -m playwright install --with-deps chromium
+        run: |
+          command -v microsoft-edge || command -v microsoft-edge-stable
+          microsoft-edge --version || microsoft-edge-stable --version
 
       - name: Processar notas
         if: steps.fila.outputs.tem_notas == 'true'
