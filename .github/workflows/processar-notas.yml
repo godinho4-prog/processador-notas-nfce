@@ -48,11 +48,26 @@ jobs:
         if: steps.fila.outputs.tem_notas == 'true'
         run: pip install -r requirements-notas.txt
 
-      - name: Conferir Microsoft Edge
+      - name: Diagnosticar Microsoft Edge
         if: steps.fila.outputs.tem_notas == 'true'
         run: |
-          command -v microsoft-edge || command -v microsoft-edge-stable
-          microsoft-edge --version || microsoft-edge-stable --version
+          EDGE="$(command -v microsoft-edge || command -v microsoft-edge-stable)"
+          echo "Edge encontrado em: $EDGE"
+          "$EDGE" --version
+
+          rm -rf /tmp/edge-teste-nfce
+
+          status=0
+          timeout 10s "$EDGE" \
+            --headless=new \
+            --remote-debugging-port=9223 \
+            --remote-debugging-address=127.0.0.1 \
+            --user-data-dir=/tmp/edge-teste-nfce \
+            --no-first-run \
+            --no-default-browser-check \
+            about:blank 2>&1 || status=$?
+
+          echo "Código de saída do teste: $status"
 
       - name: Processar notas
         if: steps.fila.outputs.tem_notas == 'true'
