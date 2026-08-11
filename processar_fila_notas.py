@@ -14,6 +14,7 @@ import urllib.request
 
 import firebase_admin
 from firebase_admin import credentials, firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 from playwright.sync_api import (
     TimeoutError as PlaywrightTimeoutError,
     sync_playwright,
@@ -365,7 +366,13 @@ def recuperar_processamentos_travados(db):
 
     consulta = (
         db.collection(COLECAO_FILA)
-        .where("estado", "==", "processando")
+        .where(
+            filter=FieldFilter(
+                "estado",
+                "==",
+                "processando",
+            )
+        )
     )
 
     for documento in consulta.stream():
@@ -399,7 +406,13 @@ def recuperar_processamentos_travados(db):
 def buscar_solicitacoes_aguardando(db):
     consulta = (
         db.collection(COLECAO_FILA)
-        .where("estado", "==", "aguardando")
+        .where(
+            filter=FieldFilter(
+                "estado",
+                "==",
+                "aguardando",
+            )
+        )
     )
 
     return list(consulta.stream())
@@ -892,8 +905,6 @@ def main():
                     link,
                     chave,
                 )
-
-                print("Extraindo os dados...")
 
                 print("Extraindo os dados...")
                 nota = processar_texto_da_nota(
