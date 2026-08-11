@@ -64,11 +64,12 @@ jobs:
 
           echo "Sandbox configurado:"
           ls -l "$SANDBOX"
+          
       - name: Processar notas
         if: steps.fila.outputs.tem_notas == 'true'
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          MODO_HEADLESS: "1"
+          MODO_HEADLESS: "0"
           SALVAR_DEBUG: "0"
           PYTHONUNBUFFERED: "1"
-        run: python processar_fila_notas.py
+        run: xvfb-run -a python processar_fila_notas.py
