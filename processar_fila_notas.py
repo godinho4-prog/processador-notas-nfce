@@ -14,7 +14,10 @@ import urllib.request
 
 import firebase_admin
 from firebase_admin import credentials, firestore
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import (
+    TimeoutError as PlaywrightTimeoutError,
+    sync_playwright,
+)
 
 from importar_notas_csv import (
     abrir_nota_como_celular,
@@ -28,6 +31,9 @@ PASTA_DEBUG = Path("debug_fila_notas")
 COLECAO_FILA = "filaNotas"
 COLECAO_NOTAS = "notasCapturadas"
 MINUTOS_PROCESSAMENTO_TRAVADO = 30
+
+MAX_TENTATIVAS_SEFAZ = 3
+SEGUNDOS_ENTRE_TENTATIVAS = 5
 
 
 def numero_br_para_float(valor):
@@ -52,6 +58,154 @@ def normalizar_texto_busca(texto):
         .lower()
     )
 
+
+def texto_busca_compacto(texto):
+    return re.sub(
+        r"\s+",
+        " ",
+        normalizar_texto_busca(texto),
+    ).strip()
+
+
+def pagina_tem_sinais_nfce(texto):
+    texto_normalizado = texto_busca_compacto(texto)
+
+    marcadores = (
+        "cnpj:",
+        "chave de acesso",
+        "valor a pagar",
+        "qtd. total de itens",
+        "emissao:",
+        "numero:",
+        "serie:",
+    )
+
+    quantidade = sum(
+        marcador in texto_normalizado
+        for marcador in marcadores
+    )
+
+    return quantidade >= 2
+
+
+class ErroTemporarioSefaz(RuntimeError):
+    pass
+
+
+def diagnosticar_resposta_sefaz(texto):
+    texto_normalizado = texto_busca_compacto(texto)
+
+    if not texto_normalizado:
+        raise ErroTemporarioSefaz(
+            "A SEFAZ-RJ respondeu sem conteúdo legível."
+        )
+
+    if (
+        "servico de seguranca da informacao bloqueia acessos"
+        in texto_normalizado
+        or (
+            "enderecos ip"
+            in texto_normalizado
+            and "mensagem de bloqueio"
+            in texto_normalizado
+        )
+    ):
+        raise RuntimeError(
+            "A SEFAZ-RJ bloqueou este acesso pela camada "
+            "de segurança do serviço."
+        )
+
+    erros_rede = {
+        "err_connection_refused":
+            "A conexão com a SEFAZ-RJ foi recusada.",
+        "err_timed_out":
+            "A conexão com a SEFAZ-RJ expirou.",
+        "err_name_not_resolved":
+            "Não foi possível localizar o endereço da SEFAZ-RJ.",
+        "err_network_changed":
+            "A conexão de rede mudou durante o acesso à SEFAZ-RJ.",
+        "err_internet_disconnected":
+            "O computador ficou sem conexão com a internet.",
+    }
+
+    for codigo, mensagem in erros_rede.items():
+        if codigo in texto_normalizado:
+            raise ErroTemporarioSefaz(mensagem)
+
+    if (
+        "service unavailable" in texto_normalizado
+        or "503 service unavailable" in texto_normalizado
+    ):
+        raise ErroTemporarioSefaz(
+            "A SEFAZ-RJ está temporariamente indisponível."
+        )
+
+
+def abrir_nota_com_retentativas(
+    pagina,
+    link,
+    chave,
+):
+    texto = ""
+    html = ""
+
+    for tentativa in range(
+        1,
+        MAX_TENTATIVAS_SEFAZ + 1,
+    ):
+        print(
+            "Abrindo a SEFAZ-RJ..."
+            if tentativa == 1
+            else (
+                "Tentando novamente a SEFAZ-RJ "
+                f"({tentativa}/{MAX_TENTATIVAS_SEFAZ})..."
+            )
+        )
+
+        try:
+            try:
+                texto, html = abrir_nota_como_celular(
+                    pagina,
+                    link,
+                )
+            except PlaywrightTimeoutError as erro:
+                raise ErroTemporarioSefaz(
+                    "A SEFAZ-RJ não respondeu dentro "
+                    "do tempo esperado."
+                ) from erro
+
+            salvar_debug(
+                chave,
+                texto,
+                html,
+            )
+
+            diagnosticar_resposta_sefaz(
+                texto
+            )
+
+            return texto, html
+
+        except ErroTemporarioSefaz as erro:
+            if tentativa >= MAX_TENTATIVAS_SEFAZ:
+                raise
+
+            print(
+                "Problema temporário: "
+                f"{erro}"
+            )
+            print(
+                "Nova tentativa em "
+                f"{SEGUNDOS_ENTRE_TENTATIVAS} segundos..."
+            )
+
+            time.sleep(
+                SEGUNDOS_ENTRE_TENTATIVAS
+            )
+
+    raise RuntimeError(
+        "A abertura da NFC-e terminou de forma inesperada."
+    )
 
 def localizar_valor_resumo(texto, rotulo_regex):
     texto_normalizado = normalizar_texto_busca(texto)
@@ -305,13 +459,30 @@ def preparar_itens(nota):
     return itens
 
 
-def validar_nota(nota, chave_esperada):
+def validar_nota(
+    nota,
+    chave_esperada,
+    texto_pagina="",
+):
     chave_extraida = str(nota.get("chave", "")).strip()
     mercado = str(nota.get("mercado", "")).strip()
     itens = nota.get("itens", [])
 
+    parece_nfce = pagina_tem_sinais_nfce(
+        texto_pagina
+    )
+
     if not chave_extraida:
-        raise ValueError("A página não informou a chave da nota.")
+        if not parece_nfce:
+            raise ValueError(
+                "A SEFAZ-RJ respondeu, mas a página recebida "
+                "não parece ser uma NFC-e."
+            )
+
+        raise ValueError(
+            "A NFC-e foi recebida, mas não foi possível "
+            "identificar sua chave."
+        )
 
     if chave_extraida != chave_esperada:
         raise ValueError(
@@ -319,10 +490,28 @@ def validar_nota(nota, chave_esperada):
         )
 
     if not mercado:
-        raise ValueError("Não foi possível identificar o mercado.")
+        if not parece_nfce:
+            raise ValueError(
+                "A SEFAZ-RJ respondeu, mas a página recebida "
+                "não parece ser uma NFC-e."
+            )
+
+        raise ValueError(
+            "A NFC-e foi recebida, mas não foi possível "
+            "identificar o mercado no formato atual da página."
+        )
 
     if not itens:
-        raise ValueError("Nenhum item foi encontrado na nota.")
+        if not parece_nfce:
+            raise ValueError(
+                "A SEFAZ-RJ respondeu, mas a página recebida "
+                "não parece ser uma NFC-e."
+            )
+
+        raise ValueError(
+            "A NFC-e foi recebida, mas nenhum item pôde ser "
+            "extraído no formato atual da página."
+        )
 
 
 def deve_salvar_debug():
@@ -609,7 +798,11 @@ def main():
 
     print(
         "Modo do navegador: "
-        + ("sem janela (online)" if modo_headless else "com janela (PC)")
+        + (
+            "sem interface gráfica"
+            if modo_headless
+            else "com interface gráfica"
+        )
     )
 
     with sync_playwright() as p:
@@ -694,11 +887,13 @@ def main():
             try:
                 marcar_processando(referencia)
 
-                print("Abrindo a SEFAZ-RJ...")
-                texto, html = abrir_nota_como_celular(
+                texto, html = abrir_nota_com_retentativas(
                     pagina,
                     link,
+                    chave,
                 )
+
+                print("Extraindo os dados...")
 
                 print("Extraindo os dados...")
                 nota = processar_texto_da_nota(
@@ -706,8 +901,11 @@ def main():
                     link,
                 )
 
-                salvar_debug(chave, texto, html)
-                validar_nota(nota, chave)
+                validar_nota(
+                    nota,
+                    chave,
+                    texto,
+                )
 
                 dados_nota = salvar_nota_capturada(
                     db,
