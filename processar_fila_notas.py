@@ -602,9 +602,9 @@ def main():
     sucessos = 0
     falhas = 0
 
-    modo_headless = (
-        variavel_verdadeira("CI")
-        or variavel_verdadeira("MODO_HEADLESS")
+    modo_headless = variavel_verdadeira(
+        "MODO_HEADLESS",
+        padrao=variavel_verdadeira("CI"),
     )
 
     print(
