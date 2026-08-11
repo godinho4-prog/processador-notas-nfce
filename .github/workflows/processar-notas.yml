@@ -48,27 +48,22 @@ jobs:
         if: steps.fila.outputs.tem_notas == 'true'
         run: pip install -r requirements-notas.txt
 
-      - name: Diagnosticar Microsoft Edge
+      - name: Preparar Microsoft Edge
         if: steps.fila.outputs.tem_notas == 'true'
         run: |
           EDGE="$(command -v microsoft-edge || command -v microsoft-edge-stable)"
-          echo "Edge encontrado em: $EDGE"
+          EDGE_REAL="$(readlink -f "$EDGE")"
+          EDGE_DIR="$(dirname "$EDGE_REAL")"
+          SANDBOX="$EDGE_DIR/msedge-sandbox"
+
+          echo "Edge: $EDGE"
           "$EDGE" --version
 
-          rm -rf /tmp/edge-teste-nfce
+          sudo chown root:root "$SANDBOX"
+          sudo chmod 4755 "$SANDBOX"
 
-          status=0
-          timeout 10s "$EDGE" \
-            --headless=new \
-            --remote-debugging-port=9223 \
-            --remote-debugging-address=127.0.0.1 \
-            --user-data-dir=/tmp/edge-teste-nfce \
-            --no-first-run \
-            --no-default-browser-check \
-            about:blank 2>&1 || status=$?
-
-          echo "Código de saída do teste: $status"
-
+          echo "Sandbox configurado:"
+          ls -l "$SANDBOX"
       - name: Processar notas
         if: steps.fila.outputs.tem_notas == 'true'
         env:
