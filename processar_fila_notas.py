@@ -775,6 +775,48 @@ def iniciar_edge_externo(modo_headless):
     )
 
 
+def iniciar_edge_externo_com_retry(
+    modo_headless,
+    max_tentativas=3,
+):
+    ultimo_erro = None
+
+    for tentativa in range(1, max_tentativas + 1):
+        try:
+            if tentativa > 1:
+                print(
+                    f"Tentativa {tentativa}/{max_tentativas} "
+                    "de iniciar o Edge externo..."
+                )
+
+            return iniciar_edge_externo(modo_headless)
+
+        except RuntimeError as erro:
+            ultimo_erro = erro
+            mensagem = str(erro)
+
+            erro_de_inicializacao = (
+                "conexão de depuração não ficou disponível"
+                in mensagem
+                or "encerrou inesperadamente"
+                in mensagem
+            )
+
+            if not erro_de_inicializacao:
+                raise
+
+            if tentativa >= max_tentativas:
+                raise
+
+            print(
+                "A inicialização do Edge falhou. "
+                "Tentando novamente em 2 segundos..."
+            )
+            time.sleep(2)
+
+    raise ultimo_erro
+
+
 def main():
     print("=" * 70)
     print("PROCESSADOR DA FILA DE NOTAS NFC-e")
@@ -820,7 +862,7 @@ def main():
 
     with sync_playwright() as p:
         processo_edge, pasta_perfil_edge, endereco_cdp = (
-            iniciar_edge_externo(modo_headless)
+            iniciar_edge_externo_com_retry(modo_headless)
         )
 
         print(
